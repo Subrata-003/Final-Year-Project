@@ -12,11 +12,11 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Random;
-import java.util.HashSet;
 import java.util.Set;
+import java.util.HashSet;
 
 /* =========================================================
-   Adaptive Stimuli – Bug #1 + Bug #2 Fixed
+   Adaptive Stimuli – Correct Multi-Stimulus Convergence
    ========================================================= */
 
 public class AdaptiveStimuli_FinalCorrect {
@@ -27,16 +27,17 @@ public class AdaptiveStimuli_FinalCorrect {
 
 /* ===================== MODEL ===================== */
 
-enum State {
-    UNAWARE,
-    AWARE,
-    ALL_CLEAR
-}
-
 class Cell {
-    State state = State.UNAWARE;
+
     boolean stimulus = false;
     int stimulusId = -1;
+
+    Set<Integer> awareFromStimuli = new HashSet<>();
+    Set<Integer> clearingStimuli = new HashSet<>();
+
+    boolean isAware() {
+        return !awareFromStimuli.isEmpty();
+    }
 }
 
 class Token {
@@ -59,7 +60,6 @@ class SimFrame extends JFrame {
     final int rows, cols;
     final Cell[][] grid;
     final List<Token> tokens = new ArrayList<>();
-    final Set<Integer> inactiveStimuli = new HashSet<>();
 
     final Random rnd = new Random();
     final GridPanel panel;
@@ -72,7 +72,7 @@ class SimFrame extends JFrame {
     int nextStimulusId = 1;
 
     SimFrame(int r, int c) {
-        super("Adaptive Stimuli – Diagonal Adjacency Fixed");
+        super("Adaptive Stimuli – Correct Multi-Stimulus");
 
         rows = r;
         cols = c;
@@ -121,17 +121,16 @@ class SimFrame extends JFrame {
     void handleClick(int r, int c) {
         Cell u = grid[r][c];
 
-        if (!u.stimulus && u.state == State.UNAWARE) {
+        if (!u.stimulus) {
             u.stimulus = true;
             u.stimulusId = nextStimulusId++;
-            u.state = State.AWARE;
-        }
-        else if (u.stimulus) {
-            inactiveStimuli.add(u.stimulusId);
+            u.awareFromStimuli.add(u.stimulusId);
+        } else {
+            int sid = u.stimulusId;
             u.stimulus = false;
-            u.stimulusId = -1;
-            u.state = State.ALL_CLEAR;
+            u.clearingStimuli.add(sid);
         }
+
         repaint();
     }
 
@@ -154,7 +153,7 @@ class SimFrame extends JFrame {
 
         for (Token t : tokens) {
 
-            if (inactiveStimuli.contains(t.stimulusId) || t.hopsLeft <= 0) {
+            if (t.hopsLeft <= 0) {
                 dead.add(t);
                 continue;
             }
@@ -167,51 +166,57 @@ class SimFrame extends JFrame {
             t.c = nb[1];
             t.hopsLeft--;
 
-            if (grid[t.r][t.c].state == State.UNAWARE) {
-                grid[t.r][t.c].state = State.AWARE;
+            Cell v = grid[t.r][t.c];
+
+            // absorb if clearing this stimulus
+            if (v.clearingStimuli.contains(t.stimulusId)) {
+                dead.add(t);
+                continue;
             }
+
+            v.awareFromStimuli.add(t.stimulusId);
         }
+
         tokens.removeAll(dead);
 
-        /* ---- FLOOD ALL-CLEAR ---- */
-        List<int[]> toPropagate = new ArrayList<>();
+        /* ---- CLEARING PROPAGATION ---- */
 
-        for (int i = 0; i < rows; i++) {
-            for (int j = 0; j < cols; j++) {
-                if (grid[i][j].state == State.ALL_CLEAR) {
-                    if (hasWitnessNeighbor(i, j)) {
-                        grid[i][j].state = State.AWARE;
-                    } else {
-                        toPropagate.add(new int[]{i, j});
-                    }
-                }
-            }
-        }
+        List<int[]> toProcess = new ArrayList<>();
 
-        for (int[] pos : toPropagate) {
+        for (int i = 0; i < rows; i++)
+            for (int j = 0; j < cols; j++)
+                if (!grid[i][j].clearingStimuli.isEmpty())
+                    toProcess.add(new int[]{i, j});
+
+        for (int[] pos : toProcess) {
             int r0 = pos[0], c0 = pos[1];
-            for (int[] nb : neighbors(r0, c0)) {
-                Cell v = grid[nb[0]][nb[1]];
-                if (v.state == State.AWARE) {
-                    v.state = State.ALL_CLEAR;
+            Cell u = grid[r0][c0];
+
+            Set<Integer> clearingCopy = new HashSet<>(u.clearingStimuli);
+
+            for (int sid : clearingCopy) {
+
+                for (int[] nb : neighbors(r0, c0)) {
+                    Cell v = grid[nb[0]][nb[1]];
+
+                    if (v.awareFromStimuli.contains(sid)) {
+                        v.clearingStimuli.add(sid);
+                    }
+
+                    tokens.removeIf(t ->
+                        t.r == nb[0] &&
+                        t.c == nb[1] &&
+                        t.stimulusId == sid);
                 }
+
+                u.awareFromStimuli.remove(sid);
+                u.clearingStimuli.remove(sid);
             }
-            grid[r0][c0].state = State.UNAWARE;
         }
 
         repaint();
     }
 
-    /* ===================== HELPERS ===================== */
-
-    boolean hasWitnessNeighbor(int r, int c) {
-        for (int[] nb : neighbors(r, c))
-            if (grid[nb[0]][nb[1]].stimulus)
-                return true;
-        return false;
-    }
-
-    /* 🔑 FIX #2: 8-connected adjacency */
     List<int[]> neighbors(int r, int c) {
         List<int[]> list = new ArrayList<>();
         for (int dr = -1; dr <= 1; dr++) {
@@ -219,9 +224,8 @@ class SimFrame extends JFrame {
                 if (dr == 0 && dc == 0) continue;
                 int nr = r + dr;
                 int nc = c + dc;
-                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols)
                     list.add(new int[]{nr, nc});
-                }
             }
         }
         return list;
@@ -238,10 +242,15 @@ class SimFrame extends JFrame {
             for (int i = 0; i < rows; i++) {
                 for (int j = 0; j < cols; j++) {
                     Cell u = grid[i][j];
-                    if (u.stimulus) g.setColor(new Color(60, 170, 60));
-                    else if (u.state == State.AWARE) g.setColor(new Color(255, 160, 160));
-                    else if (u.state == State.ALL_CLEAR) g.setColor(new Color(160, 130, 210));
-                    else g.setColor(new Color(255, 240, 170));
+
+                    if (u.stimulus)
+                        g.setColor(new Color(60, 170, 60));
+                    else if (!u.clearingStimuli.isEmpty())
+                        g.setColor(new Color(160, 130, 210));
+                    else if (u.isAware())
+                        g.setColor(new Color(255, 160, 160));
+                    else
+                        g.setColor(new Color(255, 240, 170));
 
                     g.fillRect(j * cell, i * cell, cell - 1, cell - 1);
                 }
