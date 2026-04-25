@@ -8,9 +8,10 @@ import java.util.List;
 /**
  * HexCluster_AdaptiveStimuli.java
  *
- * Combines Euclidean MST clustering on a hexagonal grid with 
+ * Combines Euclidean MST clustering on a hexagonal grid with
  * decentralized multi-stimulus token propagation and clearing waves.
- * * Only active nodes (Blue/Green) participate in token passing.
+ * Includes probabilistic token walking and token consumption rules.
+ * All active routing nodes are converted directly to Blue terminals.
  */
 public class HexCluster_AdaptiveStimuli {
     public static void main(String[] args) {
@@ -58,8 +59,8 @@ class ClusterFrame extends JFrame {
     final List<Hole> holes = new ArrayList<>();
     final Map<String, Integer> holeIndexByXY = new HashMap<>();
 
+    // Only one active agent set now
     final Set<Integer> blueAgents = new HashSet<>();
-    final Set<Integer> greenAgents = new HashSet<>();
     final List<int[]> realizedEdges = new ArrayList<>();
 
     // perimeter adjacency (vertex i connected to i+1 for each hex)
@@ -69,9 +70,11 @@ class ClusterFrame extends JFrame {
     NodeState[] nodeStates;
     final List<Token> tokens = new ArrayList<>();
     Timer timer;
-    double tokenGenProb = 0.15;
-    int tokenMaxHops = 15;
-    int delayMs = 300;
+
+    double tokenGenProb = 0.15; // Probability a stimulus generates a token
+    double walkProb = 1.00;     // Probability that token continues walking
+    int tokenMaxHops = 1200;    // Increased hop limit
+    int delayMs = 80;           // Simulation speed
     int nextStimulusId = 1;
 
     final Random rnd = new Random();
@@ -98,7 +101,6 @@ class ClusterFrame extends JFrame {
         regen.setFocusPainted(false);
         regen.addActionListener(e -> {
             randomPlaceAgents(20);
-            greenAgents.clear();
             realizedEdges.clear();
             resetSim();
             drawPanel.repaint();
@@ -128,6 +130,7 @@ class ClusterFrame extends JFrame {
 
         add(top, BorderLayout.NORTH);
         add(new JScrollPane(drawPanel), BorderLayout.CENTER);
+        add(new LegendPanel(), BorderLayout.SOUTH);
 
         randomPlaceAgents(40);
 
@@ -173,10 +176,16 @@ class ClusterFrame extends JFrame {
                 continue;
             }
 
-            // Find valid neighbors: must be adjacent AND active (Blue or Green)
+            /* probabilistic continuation of walk */
+            if (rnd.nextDouble() >= walkProb) {
+                dead.add(t);
+                continue;
+            }
+
+            // Find valid neighbors: must be adjacent AND active (Blue)
             List<Integer> validNbs = new ArrayList<>();
             for (int nb : holeAdj.get(t.posIndex)) {
-                if (blueAgents.contains(nb) || greenAgents.contains(nb)) {
+                if (blueAgents.contains(nb)) {
                     validNbs.add(nb);
                 }
             }
@@ -199,7 +208,11 @@ class ClusterFrame extends JFrame {
                 continue;
             }
 
-            v.awareFromStimuli.add(t.stimulusId);
+            // Consume token upon infecting an unaware node
+            if (!v.awareFromStimuli.contains(t.stimulusId)) {
+                v.awareFromStimuli.add(t.stimulusId);
+                dead.add(t);
+            }
         }
 
         tokens.removeAll(dead);
@@ -219,7 +232,7 @@ class ClusterFrame extends JFrame {
             for (int sid : clearingCopy) {
                 for (int nb : holeAdj.get(uIdx)) {
                     // Only propagate through active nodes
-                    if (!(blueAgents.contains(nb) || greenAgents.contains(nb))) continue;
+                    if (!blueAgents.contains(nb)) continue;
 
                     NodeState v = nodeStates[nb];
                     if (v.awareFromStimuli.contains(sid)) {
@@ -302,7 +315,6 @@ class ClusterFrame extends JFrame {
     }
 
     void realizeMSTWithRedundancy() {
-        greenAgents.clear();
         realizedEdges.clear();
 
         if (blueAgents.size() <= 1) return;
@@ -330,7 +342,7 @@ class ClusterFrame extends JFrame {
 
         for (MSEdge e : mstEdges) {
             List<Integer> path = shortestPathOnHoles(e.u, e.v, holeAdj);
-            if (path != null) addPathAsGreensAndEdges(path);
+            if (path != null) addPathAsEdges(path);
         }
 
         for (int u : bluesList) {
@@ -345,18 +357,16 @@ class ClusterFrame extends JFrame {
                 MSEdge cand = pq.poll();
                 List<Integer> path = shortestPathOnHoles(cand.u, cand.v, holeAdj);
                 if (path != null) {
-                    addPathAsGreensAndEdges(path);
+                    addPathAsEdges(path);
                     added++;
                 }
             }
         }
 
-        Set<Integer> active = new HashSet<>();
-        active.addAll(blueAgents);
-        active.addAll(greenAgents);
+        // Add perimeter edges between active agents to realize them visually
         for (int a : holeAdj.keySet()) {
             for (int b : holeAdj.get(a)) {
-                if (a < b && active.contains(a) && active.contains(b)) {
+                if (a < b && blueAgents.contains(a) && blueAgents.contains(b)) {
                     realizedEdges.add(new int[]{a, b});
                 }
             }
@@ -376,8 +386,11 @@ class ClusterFrame extends JFrame {
         realizedEdges.addAll(uniq);
     }
 
-    void addPathAsGreensAndEdges(List<Integer> path) {
-        for (int idx : path) if (!blueAgents.contains(idx)) greenAgents.add(idx);
+    // Now simply adds any routing nodes directly to the Blue active group
+    void addPathAsEdges(List<Integer> path) {
+        for (int idx : path) {
+            blueAgents.add(idx);
+        }
         for (int i = 0; i + 1 < path.size(); i++) realizedEdges.add(new int[]{path.get(i), path.get(i + 1)});
     }
 
@@ -512,7 +525,7 @@ class ClusterFrame extends JFrame {
                     if (clickedHole == -1) return;
 
                     // Only active network nodes can be stimuli
-                    if (!(blueAgents.contains(clickedHole) || greenAgents.contains(clickedHole))) return;
+                    if (!blueAgents.contains(clickedHole)) return;
 
                     NodeState u = nodeStates[clickedHole];
                     if (!u.stimulus) {
@@ -566,7 +579,7 @@ class ClusterFrame extends JFrame {
 
             // Draw States (Halos)
             for (int i = 0; i < holes.size(); i++) {
-                if (!(blueAgents.contains(i) || greenAgents.contains(i))) continue;
+                if (!blueAgents.contains(i)) continue;
                 Hole h = holes.get(i);
                 NodeState ns = nodeStates[i];
 
@@ -580,15 +593,6 @@ class ClusterFrame extends JFrame {
                     g.setColor(new Color(255, 160, 160, 160)); // Aware Pink
                     g.fillOval(h.x - 18, h.y - 18, 36, 36);
                 }
-            }
-
-            // Green agents
-            for (int gi : greenAgents) {
-                Hole h = holes.get(gi);
-                g.setColor(new Color(56, 142, 60));
-                g.fillOval(h.x - agentRadius, h.y - agentRadius, agentRadius * 2, agentRadius * 2);
-                g.setColor(new Color(27, 94, 32));
-                g.drawOval(h.x - agentRadius, h.y - agentRadius, agentRadius * 2, agentRadius * 2);
             }
 
             // Blue agents
@@ -614,10 +618,33 @@ class ClusterFrame extends JFrame {
             // Faint unassigned holes
             g.setColor(new Color(150, 160, 170, 80));
             for (Hole h : holes) {
-                if (!blueAgents.contains(h.vertexIndex) && !greenAgents.contains(h.vertexIndex)) {
+                if (!blueAgents.contains(h.vertexIndex)) {
                     g.drawOval(h.x - holeRadius, h.y - holeRadius, holeRadius * 2, holeRadius * 2);
                 }
             }
+        }
+    }
+
+    /* color legend */
+    class LegendPanel extends JPanel {
+        LegendPanel() {
+            setLayout(new FlowLayout());
+
+            addLegend(new Color(150, 160, 170), "Inactive Node");
+            addLegend(new Color(30, 136, 229), "Active Network Node");
+            addLegend(new Color(60, 170, 60, 160), "Active Stimulus");
+            addLegend(new Color(255, 160, 160, 160), "Aware");
+            addLegend(new Color(160, 130, 210, 160), "All Clear Wave");
+            addLegend(Color.RED, "Token");
+        }
+
+        void addLegend(Color c, String text) {
+            JPanel box = new JPanel();
+            box.setBackground(c);
+            box.setPreferredSize(new Dimension(15, 15));
+
+            add(box);
+            add(new JLabel(text));
         }
     }
 }
