@@ -1,3 +1,4 @@
+package hex;
 import javax.swing.*;
 import javax.swing.Timer;
 import java.awt.*;
